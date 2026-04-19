@@ -26,7 +26,8 @@ class SlotAblationConfig:
     use_minivlm: bool = False
     use_pro_version: bool = True
     run_root_dir: Path = Path("runs/slot_ablation")
-    data_root_dir: Path = Path("data/libero")
+    # AutoDL 默认数据盘：/root/autodl-tmp/data（可通过命令行 --data_root_dir 覆盖）
+    data_root_dir: Path = Path("/root/autodl-tmp/data")
     dataset_name: str = "libero_spatial_no_noops"
     num_images_in_input: int = 2
     use_proprio: bool = True

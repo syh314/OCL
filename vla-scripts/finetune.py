@@ -75,7 +75,8 @@ class FinetuneConfig:
     resum_vla_path: str = "openvla/openvla-7b"       # 当需要从某个特定的 VLA 检查点恢复训练时使用的路径
 
     # Dataset
-    data_root_dir: Path = Path("datasets/rlds")      # Directory containing RLDS datasets
+    # AutoDL 默认数据盘（可通过 --data_root_dir 覆盖）
+    data_root_dir: Path = Path("/root/autodl-tmp/data")
     dataset_name: str = "aloha_scoop_x_into_bowl"    # Name of fine-tuning dataset (e.g., `aloha_scoop_x_into_bowl`)
     run_root_dir: Path = Path("runs")                # logs & checkpoints
     shuffle_buffer_size: int = 100_000               # Dataloader shuffle buffer size (can reduce if OOM errors occur)
