@@ -15,6 +15,8 @@ utilities around different types of decoding/generation strategies.
 import warnings
 from abc import ABC, abstractmethod
 from functools import partial
+import json
+from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Type
 
 import torch
@@ -114,25 +116,40 @@ class HFCausalLLMBackbone(LLMBackbone, ABC):
         self.llm_family = llm_family
         self.llm_max_length = llm_max_length
         self.inference_mode = inference_mode
+        local_config_dir = self._get_local_prismatic_config_dir()
 
         # Initialize LLM (downloading from HF Hub if necessary) --> `llm_cls` is the actual {Model}ForCausalLM class!
         #   => Note: We're eschewing use of the AutoModel API so that we can be more explicit about LLM-specific details
         if not self.inference_mode:
             overwatch.info(f"Loading [bold]{llm_family}[/] LLM from [underline]`{hf_hub_path}`[/]", ctx_level=1)
-            self.llm = llm_cls.from_pretrained(
-                hf_hub_path,
-                token=hf_token,
-                use_flash_attention_2=use_flash_attention_2 if not self.inference_mode else False,
-                # The following parameters are set to prevent `UserWarnings` from HF; we want greedy decoding!
-                do_sample=False,
-                temperature=1.0,
-                top_p=1.0,
-            )
+            try:
+                # Force local-only mode: never contact huggingface.co in offline environments.
+                self.llm = llm_cls.from_pretrained(
+                    hf_hub_path,
+                    token=hf_token,
+                    local_files_only=True,
+                    use_flash_attention_2=use_flash_attention_2 if not self.inference_mode else False,
+                    # The following parameters are set to prevent `UserWarnings` from HF; we want greedy decoding!
+                    do_sample=False,
+                    temperature=1.0,
+                    top_p=1.0,
+                )
+            except Exception as e:
+                overwatch.info(
+                    "Falling back to local config init (`pretrained=False` equivalent) because pretrained LLM weights "
+                    f"could not be loaded offline from `{hf_hub_path}`: {e}",
+                    ctx_level=1,
+                )
+                llm_config = self._build_llm_config_from_local_config(local_config_dir, hf_hub_path, hf_token)
+                if hasattr(llm_cls, "from_config"):
+                    self.llm = llm_cls.from_config(llm_config)
+                else:
+                    self.llm = llm_cls._from_config(llm_config)
 
         # [Contract] `inference_mode` means we're loading from a pretrained checkpoint; no need to load base weights!
         else:
             overwatch.info(f"Building empty [bold]{llm_family}[/] LLM from [underline]`{hf_hub_path}`[/]", ctx_level=1)
-            llm_config = AutoConfig.from_pretrained(hf_hub_path, token=hf_token)
+            llm_config = self._build_llm_config_from_local_config(local_config_dir, hf_hub_path, hf_token)
 
             # versioning difference for prismatic models.
             if hasattr(llm_cls, "from_config"):
@@ -154,9 +171,28 @@ class HFCausalLLMBackbone(LLMBackbone, ABC):
 
         # Load (Fast) Tokenizer
         overwatch.info(f"Loading [bold]{llm_family}[/] (Fast) Tokenizer via the AutoTokenizer API", ctx_level=1)
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            hf_hub_path, model_max_length=self.llm_max_length, token=hf_token, padding_side="right"
-        )
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                hf_hub_path,
+                model_max_length=self.llm_max_length,
+                token=hf_token,
+                padding_side="right",
+                local_files_only=True,
+            )
+        except Exception:
+            if local_config_dir is None:
+                raise
+            overwatch.info(
+                f"Loading tokenizer from local config directory `{local_config_dir}` (offline fallback).",
+                ctx_level=1,
+            )
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                str(local_config_dir),
+                model_max_length=self.llm_max_length,
+                token=hf_token,
+                padding_side="right",
+                local_files_only=True,
+            )
 
         # Validation =>> Our VLM logic currently operates under the assumption that the tokenization of a new input
         #                starts with a <BOS> token unless `add_special_tokens = False`; for these models, we empirically
@@ -188,6 +224,35 @@ class HFCausalLLMBackbone(LLMBackbone, ABC):
             f"Default Tokenizer of type `{type(self.tokenizer)}` does not automatically prefix inputs with BOS token!\n"
             "Please read the comment in `base_llm.py` for more information!"
         )
+
+    @staticmethod
+    def _get_local_prismatic_config_dir() -> Optional[Path]:
+        candidates = [
+            Path.cwd() / "pretrained_models" / "configs",
+            Path(__file__).resolve().parents[4] / "pretrained_models" / "configs",
+        ]
+        for candidate in candidates:
+            if (candidate / "config.json").exists():
+                return candidate
+        return None
+
+    @staticmethod
+    def _build_llm_config_from_local_config(
+        local_config_dir: Optional[Path], hf_hub_path: str, hf_token: Optional[str]
+    ):
+        if local_config_dir is not None:
+            config_json = local_config_dir / "config.json"
+            if config_json.exists():
+                with config_json.open("r", encoding="utf-8") as f:
+                    model_cfg = json.load(f)
+                text_cfg = model_cfg.get("text_config")
+                if isinstance(text_cfg, dict) and "model_type" in text_cfg:
+                    text_cfg = dict(text_cfg)
+                    model_type = text_cfg.pop("model_type")
+                    return AutoConfig.for_model(model_type, **text_cfg)
+
+        # Last fallback: try local-only HF cache lookup (still offline-only).
+        return AutoConfig.from_pretrained(hf_hub_path, token=hf_token, local_files_only=True)
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         """Return a `transformer_auto_wrap_policy` where we wrap each instance of `self.transformer_layer_cls`"""
