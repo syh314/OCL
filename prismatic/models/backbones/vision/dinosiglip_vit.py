@@ -63,14 +63,15 @@ class DinoSigLIPViTBackbone(VisionBackbone):
         self.dino_timm_path_or_url = DINOSigLIP_VISION_BACKBONES[vision_backbone_id]["dino"]
         self.siglip_timm_path_or_url = DINOSigLIP_VISION_BACKBONES[vision_backbone_id]["siglip"]
 
-        # Initialize both Featurizers (ViTs) by downloading from HF / TIMM Hub if necessary
-        self.dino_featurizer: VisionTransformer = timm.create_model(
-            self.dino_timm_path_or_url, pretrained=True, num_classes=0, img_size=self.default_image_size
+        # Force local-only initialization: do not fetch pretrained weights from HF.
+        # Backbone weights are expected to be loaded from local training checkpoint later.
+        self.dino_featurizer: VisionTransformer = self._create_timm_model_local_only(
+            self.dino_timm_path_or_url
         )
         self.dino_featurizer.eval()
 
-        self.siglip_featurizer: VisionTransformer = timm.create_model(
-            self.siglip_timm_path_or_url, pretrained=True, num_classes=0, img_size=self.default_image_size
+        self.siglip_featurizer: VisionTransformer = self._create_timm_model_local_only(
+            self.siglip_timm_path_or_url
         )
         self.siglip_featurizer.eval()
 
@@ -149,6 +150,9 @@ class DinoSigLIPViTBackbone(VisionBackbone):
 
         else:
             raise ValueError(f"Image Resize Strategy `{self.image_resize_strategy}` is not supported!")
+
+    def _create_timm_model_local_only(self, model_id: str) -> VisionTransformer:
+        return timm.create_model(model_id, pretrained=False, num_classes=0, img_size=self.default_image_size)
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         """Return a simple FSDP policy that wraps each ViT block and then both of the _entire_ featurizers."""

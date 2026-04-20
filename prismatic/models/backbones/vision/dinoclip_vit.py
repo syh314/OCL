@@ -42,14 +42,14 @@ class DinoCLIPViTBackbone(VisionBackbone):
         self.dino_timm_path_or_url = DINOCLIP_VISION_BACKBONES[vision_backbone_id]["dino"]
         self.clip_timm_path_or_url = DINOCLIP_VISION_BACKBONES[vision_backbone_id]["clip"]
 
-        # Initialize both Featurizers (ViTs) by downloading from HF / TIMM Hub if necessary
+        # Initialize both featurizers in local-only mode; checkpoint weights are loaded from local files later.
         self.dino_featurizer: VisionTransformer = timm.create_model(
-            self.dino_timm_path_or_url, pretrained=True, num_classes=0, img_size=self.default_image_size
+            self.dino_timm_path_or_url, pretrained=False, num_classes=0, img_size=self.default_image_size
         )
         self.dino_featurizer.eval()
 
         self.clip_featurizer: VisionTransformer = timm.create_model(
-            self.clip_timm_path_or_url, pretrained=True, num_classes=0, img_size=self.default_image_size
+            self.clip_timm_path_or_url, pretrained=False, num_classes=0, img_size=self.default_image_size
         )
         self.clip_featurizer.eval()
 

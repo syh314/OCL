@@ -160,15 +160,15 @@ class TimmViTBackbone(VisionBackbone, ABC):
         self.override_act_layer = override_act_layer
         self.dtype = torch.bfloat16
 
-        # Initialize Featurizer (ViT) by downloading from HF / TIMM Hub if necessary
+        # Initialize Featurizer (ViT) in local-only mode; checkpoint weights are loaded later.
         if self.override_act_layer is None:
             self.featurizer: VisionTransformer = timm.create_model(
-                self.timm_path_or_url, pretrained=True, num_classes=0, img_size=self.default_image_size
+                self.timm_path_or_url, pretrained=False, num_classes=0, img_size=self.default_image_size
             )
         else:
             self.featurizer: VisionTransformer = timm.create_model(
                 self.timm_path_or_url,
-                pretrained=True,
+                pretrained=False,
                 num_classes=0,
                 img_size=self.default_image_size,
                 act_layer=self.override_act_layer,
