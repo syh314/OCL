@@ -4,6 +4,7 @@ run_libero_eval.py
 Evaluates a trained policy in a LIBERO simulation benchmark task suite.
 """
 
+import inspect
 import json
 import logging
 import os
@@ -16,7 +17,21 @@ from typing import Optional, Union
 
 import draccus
 import numpy as np
+import torch
 import tqdm
+
+# PyTorch 2.6+ defaults torch.load(..., weights_only=True). LIBERO's bundled task init-state
+# .pt files contain pickled numpy / legacy objects; they must load with weights_only=False.
+# OpenVLA checkpoint paths pass weights_only=True explicitly and are unaffected.
+if "weights_only" in inspect.signature(torch.load).parameters:
+    _torch_load = torch.load
+
+    def _torch_load_compat(*args, **kwargs):
+        kwargs.setdefault("weights_only", False)
+        return _torch_load(*args, **kwargs)
+
+    torch.load = _torch_load_compat
+
 from libero.libero import benchmark
 
 import wandb
