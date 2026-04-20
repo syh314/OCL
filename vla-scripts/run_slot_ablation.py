@@ -5,6 +5,7 @@ Automates the small-scale OCL-vs-Baseline validation workflow on LIBERO-Spatial.
 """
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -44,6 +45,8 @@ class SlotAblationConfig:
     phase: str = "all"  # one of: all, phase0, phase1, phase2
     skip_existing: bool = True
     save_rollout_videos: bool = False
+    # 无显示 / EGL 不可用时跳过 LIBERO 仿真评估（仍写占位 summary 以便后续步骤读取）
+    skip_libero_eval: bool = False
     phase0_steps: int = 50
     phase1_steps: int = 2000
     phase2_steps: int = 10000
@@ -63,7 +66,7 @@ def _parse_csv_ints(value: str) -> List[int]:
 
 
 def _run(cmd: List[str], cwd: Path) -> None:
-    subprocess.run(cmd, cwd=str(cwd), check=True)
+    subprocess.run(cmd, cwd=str(cwd), check=True, env=os.environ.copy())
 
 
 def _load_metrics(metrics_path: Path, split: str) -> List[Dict[str, float]]:
@@ -171,6 +174,19 @@ def _run_training_if_needed(cfg: SlotAblationConfig, repo_root: Path, run_id: st
 
 def _run_eval_if_needed(cfg: SlotAblationConfig, repo_root: Path, checkpoint_dir: Path, run_id: str, num_trials_per_task: int) -> Dict:
     summary_path = checkpoint_dir / "libero_eval_summary.json"
+    if cfg.skip_libero_eval:
+        stub = {
+            # 占位：不参与真实排序比较时用 -1.0（避免 NaN 排序问题）
+            "final_success_rate": -1.0,
+            "skipped": True,
+            "reason": "skip_libero_eval=True (no LIBERO/MuJoCo EGL run)",
+        }
+        if not (cfg.skip_existing and summary_path.exists()):
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            with summary_path.open("w", encoding="utf-8") as f:
+                json.dump(stub, f, indent=2)
+        return stub
+
     if not (cfg.skip_existing and summary_path.exists()):
         cmd = _build_eval_cmd(cfg, checkpoint_dir, run_id, num_trials_per_task)
         _run(cmd, repo_root)

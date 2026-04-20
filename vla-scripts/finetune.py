@@ -630,7 +630,7 @@ def save_training_checkpoint(
         # Save processor and LoRA adapter
         processor.save_pretrained(checkpoint_dir)
 
-        if cfg.use_fz:
+        if cfg.use_fz or not cfg.use_lora:
             vla.module.save_pretrained(checkpoint_dir) # directly save checkpoint without lora
         else:
             vla.module.save_pretrained(adapter_dir)
