@@ -911,6 +911,20 @@ def finetune(cfg: FinetuneConfig) -> None:
         # missing_keys：新模型有，但权重里没有的层
         # unexpected_keys：权重里有，但新模型没有的层
         missing_keys, unexpected_keys = vla.load_state_dict(RAW_STATE_DICT, strict=False)
+        core_missing = [
+            key for key in missing_keys
+            if key.startswith(("language_model.", "vision_backbone.", "projector."))
+        ]
+        print(
+            "Prism -> HF load_state_dict summary:\n"
+            f"  missing_keys: {len(missing_keys)}\n"
+            f"  unexpected_keys: {len(unexpected_keys)}\n"
+            f"  core_missing_keys: {len(core_missing)}"
+        )
+        if core_missing:
+            print(f"  first_core_missing_keys: {core_missing[:20]}")
+        if unexpected_keys:
+            print(f"  first_unexpected_keys: {unexpected_keys[:20]}")
         del old_state_dict
 #——————————————————————————————————————————————————————————————————
     else:
@@ -951,10 +965,13 @@ def finetune(cfg: FinetuneConfig) -> None:
         vla.print_trainable_parameters() # 打印：模型现在有哪些参数可训练
 
     else: # 不加 LoRA，只训练 action_queries / slot 相关模块
+        if not cfg.use_fz:
+            vla.requires_grad_(False)
         TRAINABLE_KEYWORDS = ("action_queries", "slot_adapter", "slot_projector")
         for name, param in vla.named_parameters():
             if any(k in name for k in TRAINABLE_KEYWORDS):
                 param.requires_grad = True
+        count_parameters(vla, "vla")
 
     # FiLM setup
     if cfg.use_film:
