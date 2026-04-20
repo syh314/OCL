@@ -96,6 +96,13 @@ def _write_json(path: Path, payload: Dict) -> None:
 def _build_finetune_cmd(cfg: SlotAblationConfig, run_id: str, use_slot_bottleneck: bool, max_steps: int, slot_alpha: float) -> List[str]:
     return [
         sys.executable,
+        "-m",
+        "torch.distributed.run",
+        "--standalone",
+        "--nnodes",
+        "1",
+        "--nproc-per-node",
+        "1",
         "vla-scripts/finetune.py",
         "--config_file_path", cfg.config_file_path,
         "--vlm_path", cfg.vlm_path,
