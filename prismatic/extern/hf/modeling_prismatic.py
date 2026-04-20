@@ -395,8 +395,8 @@ class NormalSharedInitializer(nn.Module):
         self.num = num
         self.emb_dim = emb_dim
 
-        self.mean = nn.Parameter(torch.empty(1, 1, emb_dim, dtype=torch.float))
-        self.logstd = nn.Parameter(torch.empty(1, 1, emb_dim, dtype=torch.float))
+        self.mean = nn.Parameter(torch.empty(1, 1, emb_dim))
+        self.logstd = nn.Parameter(torch.empty(1, 1, emb_dim))
         nn.init.xavier_uniform_(self.mean)
         nn.init.xavier_uniform_(self.logstd)
 
@@ -405,8 +405,9 @@ class NormalSharedInitializer(nn.Module):
     ) -> torch.Tensor:
         del condit
         b = encode.size(0) # batch size
-        mean = self.mean.expand(b, self.num, -1) # 复制 batch 份
-        return mean + torch.randn_like(mean) * self.logstd.exp() # 添加正态噪声
+        mean = self.mean.to(dtype=encode.dtype).expand(b, self.num, -1) # 复制 batch 份
+        logstd = self.logstd.to(dtype=encode.dtype)
+        return mean + torch.randn_like(mean) * logstd.exp() # 添加正态噪声
 
 
 class ARRandTransformerDecoder(nn.Module):
@@ -1344,7 +1345,7 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
             ).to(torch.bfloat16)
             task_latten_states = item[:, visual_token_start:visual_token_end, :].reshape(
                 batch_size, 1, num_visual_tokens, -1
-            )
+            ).to(torch.bfloat16)
             all_hidden_states = torch.cat((task_latten_states, actions_hidden_states), 2)
             multi_layer_hidden_states.append(all_hidden_states)
         # 把所有层沿着层维度拼接
