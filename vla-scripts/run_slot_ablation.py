@@ -21,8 +21,10 @@ def _bool_str(value: bool) -> str:
 
 @dataclass
 class SlotAblationConfig:
-    config_file_path: str = "openvla/openvla-7b"
-    vlm_path: str = "openvla/openvla-7b"
+    # AutoDL 本地模型目录（可通过命令行覆盖）
+    config_file_path: str = "/root/autodl-tmp/OCL/pretrained_models/configs" 
+    #
+    vlm_path: str = "/root/autodl-tmp/OCL/pretrained_models/prism-qwen25-extra-dinosiglip-224px-0_5b"
     use_minivlm: bool = False
     use_pro_version: bool = True
     run_root_dir: Path = Path("runs/slot_ablation")
