@@ -51,6 +51,7 @@ class SlotAblationConfig:
     phase2_eval_trials_per_task: int = 10
     phase1_eval_steps: str = "1000,2000"
     phase2_eval_steps: str = "2000,5000,10000"
+    use_val_set: bool = False
     val_freq: int = 500
     save_freq: int = 1000
     wandb_log_freq: int = 1
@@ -126,7 +127,7 @@ def _build_finetune_cmd(cfg: SlotAblationConfig, run_id: str, use_slot_bottlenec
         "--image_aug", _bool_str(cfg.image_aug),
         "--use_slot_bottleneck", _bool_str(use_slot_bottleneck),
         "--slot_recon_loss_weight", str(slot_alpha),
-        "--use_val_set", "True",
+        "--use_val_set", _bool_str(cfg.use_val_set),
         "--val_freq", str(cfg.val_freq),
         "--val_time_limit", str(cfg.val_time_limit),
         "--save_freq", str(cfg.save_freq),

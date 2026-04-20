@@ -232,6 +232,20 @@ def make_dataset_from_rlds(
 
     # construct the dataset
     split = "train" if train else "val"
+    available_splits = set(builder.info.splits.keys())
+    if split not in available_splits:
+        if (not train) and ("train" in available_splits):
+            overwatch.warning(
+                "Requested validation split `val` for dataset `%s`, but available splits are %s. "
+                "Falling back to `train` split.",
+                name,
+                sorted(available_splits),
+            )
+            split = "train"
+        else:
+            raise ValueError(
+                f"Requested split `{split}` for dataset `{name}`, but available splits are {sorted(available_splits)}."
+            )
 
     dataset = dl.DLataset.from_rlds(builder, split=split, shuffle=shuffle, num_parallel_reads=num_parallel_reads)
 
