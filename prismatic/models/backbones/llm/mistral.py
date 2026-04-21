@@ -37,7 +37,7 @@ class MistralLLMBackbone(HFCausalLLMBackbone):
         llm_max_length: int = 2048,
         hf_token: Optional[str] = None,
         inference_mode: bool = False,
-        use_flash_attention_2: bool = True,
+        use_flash_attention_2: bool = False,
     ) -> None:
         super().__init__(
             llm_backbone_id,

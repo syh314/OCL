@@ -12,10 +12,11 @@ We make this assumption to keep the LLM handling in this codebase relatively lig
 utilities around different types of decoding/generation strategies.
 """
 
+import inspect
+import json
 import warnings
 from abc import ABC, abstractmethod
 from functools import partial
-import json
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Type
 
@@ -124,16 +125,22 @@ class HFCausalLLMBackbone(LLMBackbone, ABC):
             overwatch.info(f"Loading [bold]{llm_family}[/] LLM from [underline]`{hf_hub_path}`[/]", ctx_level=1)
             try:
                 # Force local-only mode: never contact huggingface.co in offline environments.
-                self.llm = llm_cls.from_pretrained(
-                    hf_hub_path,
+                # Prefer attn_implementation="sdpa" (PyTorch) over FlashAttention2 when FA2 is not installed.
+                fa2_requested = bool(use_flash_attention_2) if not self.inference_mode else False
+                load_kw = dict(
                     token=hf_token,
                     local_files_only=True,
-                    use_flash_attention_2=use_flash_attention_2 if not self.inference_mode else False,
-                    # The following parameters are set to prevent `UserWarnings` from HF; we want greedy decoding!
                     do_sample=False,
                     temperature=1.0,
                     top_p=1.0,
                 )
+                sig = inspect.signature(llm_cls.from_pretrained)
+                if "attn_implementation" in sig.parameters:
+                    load_kw["attn_implementation"] = "flash_attention_2" if fa2_requested else "sdpa"
+                elif fa2_requested:
+                    load_kw["use_flash_attention_2"] = True
+
+                self.llm = llm_cls.from_pretrained(hf_hub_path, **load_kw)
             except Exception as e:
                 overwatch.info(
                     "Falling back to local config init (`pretrained=False` equivalent) because pretrained LLM weights "
