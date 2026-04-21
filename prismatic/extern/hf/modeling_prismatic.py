@@ -572,6 +572,37 @@ class SmoothSASlotAdapter(nn.Module):
         slotz, attenta = self.aggregat(encode, query) # 聚合槽位
         return encode, slotz, attenta
 
+    def encode_temporal_slots(
+        self,
+        feature: torch.Tensor,
+        detach_prev: bool = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Encode a per-view frame sequence with slot carryover inside the window.
+
+        feature: (batch_view, time, num_patches, feature_dim)
+        """
+        # batch_view = 视角数 * batch_size，一批数据 × 多个相机视角
+        # time 连续视频帧数
+        batch_view, time, num_patches, feature_dim = feature.shape
+        flat_feature = feature.reshape(batch_view * time, num_patches, feature_dim)
+        encode = self.encode_project(flat_feature).reshape(batch_view, time, num_patches, -1) # 把图像特征 → 投影到与 Slot 维度相同的特征空间
+
+        slot_steps, attn_steps = [], []
+        previous_slots = None
+        for frame_idx in range(time):
+            frame_encode = encode[:, frame_idx]
+            if frame_idx == 0:
+                query = self.initializ(frame_encode)
+            else:
+                query = previous_slots.detach() if detach_prev else previous_slots
+
+            slotz, attenta = self.aggregat(frame_encode, query, num_iter=self.aggregat.num_iter)
+            slot_steps.append(slotz)
+            attn_steps.append(attenta)
+            previous_slots = slotz
+
+        return encode, torch.stack(slot_steps, dim=1), torch.stack(attn_steps, dim=1)
+
     def forward(
         self,
         feature: torch.Tensor,
@@ -585,6 +616,27 @@ class SmoothSASlotAdapter(nn.Module):
             recon, attentd = self.decode(encode, slotz)
 
         return encode, slotz, attenta, recon, attentd
+
+
+def compute_slot_temporal_contrast_loss(slot_features: torch.Tensor, tau: float = 0.1) -> Optional[torch.Tensor]:
+    """Contrast same-index slots across adjacent frames.
+
+    slot_features: (batch, time, views, slots, dim)
+    """
+    if slot_features is None or slot_features.shape[1] <= 1:
+        return None
+
+    batch_size, time, num_views, num_slots, dim = slot_features.shape
+    slots = F.normalize(slot_features, p=2.0, dim=-1)
+    slots = slots.reshape(batch_size, time, num_views * num_slots, dim).permute(1, 0, 2, 3)
+    slots = slots.reshape(time, batch_size * num_views * num_slots, dim)
+
+    source = slots[:-1]
+    target = slots[1:]
+    logits = torch.einsum("tmc,tnc->tmn", source, target) / tau
+    labels = torch.arange(logits.shape[-1], dtype=torch.long, device=logits.device)
+    labels = labels.repeat(logits.shape[0])
+    return F.cross_entropy(logits.reshape(-1, logits.shape[-1]), labels)
 
 # ————————————————————————————————————————— Main HF Class Definitions ————————————————————————————————————————————————————————
 
@@ -606,6 +658,8 @@ class PrismaticCausalLMOutputWithPast(ModelOutput):
     slot_reconstruction: Optional[torch.FloatTensor] = None
     slot_decoder_attention: Optional[torch.FloatTensor] = None
     slot_recon_loss: Optional[torch.FloatTensor] = None
+    slot_features_temporal: Optional[torch.FloatTensor] = None
+    slot_temporal_loss: Optional[torch.FloatTensor] = None
 
 
 
@@ -681,9 +735,12 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
             llm_dim=config.text_config.hidden_size,
         )
 
-        # Instantiate LLM Backbone
+        # Instantiate LLM Backbone (avoid flash-attn build/runtime dependency; SDPA is built into PyTorch)
+        _attn_impl = getattr(config, "_attn_implementation", "sdpa")
+        if _attn_impl == "flash_attention_2":
+            _attn_impl = "sdpa"
         self.language_model = AutoModelForCausalLM.from_config(
-            config.text_config, attn_implementation=config._attn_implementation
+            config.text_config, attn_implementation=_attn_impl
         )
 
         self.vocab_size = config.text_config.vocab_size
@@ -852,6 +909,8 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
             slot_reconstruction=None,
             slot_decoder_attention=None,
             slot_recon_loss=None,
+            slot_features_temporal=None,
+            slot_temporal_loss=None,
         )
 
         if not self.use_slot_bottleneck:
@@ -865,6 +924,61 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
             raise ValueError(
                 f"Expected {expected_tokens} vision tokens ({num_images} images x {num_patches} patches), got {total_tokens}."
             )
+
+        use_temporal_slots = bool(getattr(self.config, "use_temporal_slots", False))
+        temporal_window_size = int(getattr(self.config, "temporal_window_size", 1))
+        if use_temporal_slots and temporal_window_size > 1:
+            if num_images % temporal_window_size != 0:
+                raise ValueError(
+                    f"Temporal slot mode expects num_images_in_input ({num_images}) to be divisible by "
+                    f"temporal_window_size ({temporal_window_size})."
+                )
+            num_views = num_images // temporal_window_size
+            temporal_patches = patch_features.reshape(
+                batch_size, temporal_window_size, num_views, num_patches, feature_dim
+            )
+            temporal_patches = temporal_patches.permute(0, 2, 1, 3, 4).reshape(
+                batch_size * num_views, temporal_window_size, num_patches, feature_dim
+            )
+
+            encode, slotz, attenta = self.slot_adapter.encode_temporal_slots(
+                temporal_patches,
+                detach_prev=bool(getattr(self.config, "slot_carryover_detach_prev", True)),
+            )
+            recon, attentd = None, None
+            if need_slot_decode:
+                flat_encode = encode.reshape(batch_size * num_views * temporal_window_size, num_patches, -1)
+                flat_slotz = slotz.reshape(batch_size * num_views * temporal_window_size, self.num_slots, -1)
+                recon, attentd = self.slot_adapter.decode(flat_encode, flat_slotz)
+                recon = recon.reshape(batch_size * num_views, temporal_window_size, num_patches, -1)
+                if attentd is not None:
+                    attentd = attentd.reshape(batch_size * num_views, temporal_window_size, self.num_slots, num_patches)
+
+            slotz_temporal = slotz.reshape(batch_size, num_views, temporal_window_size, self.num_slots, -1).permute(
+                0, 2, 1, 3, 4
+            )
+            projected_slots = self.slot_projector(
+                slotz_temporal.reshape(batch_size * temporal_window_size * num_views, self.num_slots, -1)
+            ).reshape(batch_size, temporal_window_size * num_views * self.num_slots, -1)
+
+            slot_recon_loss = None
+            if recon is not None:
+                slot_recon_loss = F.mse_loss(recon, encode.detach())
+
+            slot_temporal_loss = compute_slot_temporal_contrast_loss(
+                slotz_temporal,
+                tau=float(getattr(self.config, "slot_temporal_tau", 0.1)),
+            )
+            slot_outputs.update(
+                slot_features=slotz_temporal.reshape(batch_size, temporal_window_size * num_views * self.num_slots, -1),
+                slot_features_temporal=slotz_temporal,
+                slot_attention=attenta.reshape(batch_size, num_views, temporal_window_size, self.num_slots, num_patches).permute(0, 2, 1, 3, 4),
+                slot_reconstruction=None if recon is None else recon.reshape(batch_size, num_views, temporal_window_size, num_patches, -1).permute(0, 2, 1, 3, 4),
+                slot_decoder_attention=None if attentd is None else attentd.reshape(batch_size, num_views, temporal_window_size, self.num_slots, num_patches).permute(0, 2, 1, 3, 4),
+                slot_recon_loss=slot_recon_loss,
+                slot_temporal_loss=slot_temporal_loss,
+            )
+            return projected_slots, slot_outputs
 
         patch_features = patch_features.reshape(batch_size * num_images, num_patches, feature_dim) # 对一张图像做 Slot Attention
         encode, slotz, attenta, recon, attentd = self.slot_adapter(
@@ -982,6 +1096,8 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
             slot_reconstruction=None,
             slot_decoder_attention=None,
             slot_recon_loss=None,
+            slot_features_temporal=None,
+            slot_temporal_loss=None,
         )
 
         # 自回归生成，只输入 1 个 token
@@ -1124,9 +1240,14 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
             slot_recon_weight = getattr(self.config, "slot_recon_loss_weight", 1.0)
             weighted_recon = slot_recon_weight * slot_outputs["slot_recon_loss"]
             total_loss = weighted_recon if total_loss is None else total_loss + weighted_recon
+        if slot_outputs["slot_temporal_loss"] is not None:
+            slot_temporal_weight = getattr(self.config, "slot_temporal_loss_weight", 0.05)
+            weighted_temporal = slot_temporal_weight * slot_outputs["slot_temporal_loss"]
+            total_loss = weighted_temporal if total_loss is None else total_loss + weighted_temporal
 
         return PrismaticCausalLMOutputWithPast(
             loss=total_loss,
+            logits=language_model_output.logits,
             past_key_values=language_model_output.past_key_values,
             hidden_states=language_model_output.hidden_states,
             attentions=language_model_output.attentions,
@@ -1136,6 +1257,8 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
             slot_reconstruction=slot_outputs["slot_reconstruction"],
             slot_decoder_attention=slot_outputs["slot_decoder_attention"],
             slot_recon_loss=slot_outputs["slot_recon_loss"],
+            slot_features_temporal=slot_outputs["slot_features_temporal"],
+            slot_temporal_loss=slot_outputs["slot_temporal_loss"],
         )
 
 

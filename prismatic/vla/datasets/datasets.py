@@ -36,20 +36,25 @@ class RLDSBatchTransform:
     use_wrist_image: bool = False
     use_proprio: bool = False
     use_minivlm: bool = False
+    use_temporal_slots: bool = False
+    temporal_window_size: int = 1
 
 
     def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
         """Converts a RLDS batch to the format expected by the OpenVLA collator/models."""
-        dataset_name, current_action = rlds_batch["dataset_name"], rlds_batch["action"][0]
-        img = Image.fromarray(rlds_batch["observation"]["image_primary"][0])
+        temporal_window_size = self.temporal_window_size if self.use_temporal_slots else 1
+        current_idx = temporal_window_size - 1
+        action_chunk = rlds_batch["action"][current_idx : current_idx + NUM_ACTIONS_CHUNK]
+        dataset_name, current_action = rlds_batch["dataset_name"], action_chunk[0]
+        img = Image.fromarray(rlds_batch["observation"]["image_primary"][current_idx])
         lang = rlds_batch["task"]["language_instruction"].decode().lower()
-        actions = rlds_batch["action"]
+        actions = action_chunk
 
         # Construct Chat-based Prompt =>> Input is default query + language instruction, output are the action tokens
         prompt_builder = self.prompt_builder_fn("openvla")
 
         # Get future action chunk
-        future_actions = rlds_batch["action"][1:]
+        future_actions = actions[1:]
 
         if self.use_minivlm:
             self.prompt_builder_fn = QwenPromptBuilder
@@ -118,7 +123,19 @@ class RLDSBatchTransform:
         # Tensorize =>> Run Image Transform to get `pixel_values` =>> Return
         #   =>> IMPORTANT :: IF WE'RE USING HF LLM.forward(..., labels=labels), SHIFTING HAPPENS _INSIDE_ MODEL!
         input_ids, labels = torch.tensor(input_ids), torch.tensor(labels)
-        pixel_values = self.image_transform(img)
+        if self.use_temporal_slots and self.temporal_window_size > 1:
+            temporal_pixels = []
+            wrist_keys = sorted([key for key in rlds_batch["observation"].keys() if "wrist" in key])
+            for frame_idx in range(self.temporal_window_size):
+                frame_img = Image.fromarray(rlds_batch["observation"]["image_primary"][frame_idx])
+                temporal_pixels.append(self.image_transform(frame_img))
+                if self.use_wrist_image:
+                    for wrist_key in wrist_keys:
+                        frame_wrist_img = Image.fromarray(rlds_batch["observation"][wrist_key][frame_idx])
+                        temporal_pixels.append(self.image_transform(frame_wrist_img))
+            pixel_values = torch.cat(temporal_pixels, dim=0)
+        else:
+            pixel_values = self.image_transform(img)
 
         # [CRITICAL] We do not want to take the loss for anything but the predicted action tokens!
         labels[: -(action_chunk_len + 1)] = IGNORE_INDEX
@@ -128,7 +145,7 @@ class RLDSBatchTransform:
         return_dict = dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels, dataset_name=dataset_name, actions=actions)
 
         # Add additional inputs
-        if self.use_wrist_image:
+        if self.use_wrist_image and not (self.use_temporal_slots and self.temporal_window_size > 1):
             all_wrist_pixels = []
             for k in rlds_batch["observation"].keys():
                 if "wrist" in k:
@@ -138,6 +155,8 @@ class RLDSBatchTransform:
             return_dict["pixel_values_wrist"] = torch.cat(all_wrist_pixels, dim=0)
         if self.use_proprio and "proprio" in rlds_batch["observation"]:
             proprio = rlds_batch["observation"]["proprio"]
+            if getattr(proprio, "ndim", 0) > 1:
+                proprio = proprio[current_idx]
             return_dict["proprio"] = proprio
 
         return return_dict
@@ -154,6 +173,8 @@ class RLDSDataset(IterableDataset):
         shuffle_buffer_size: int = 256_000,
         train: bool = True,
         image_aug: bool = False,
+        use_temporal_slots: bool = False,
+        temporal_window_size: int = 1,
     ) -> None:
         """Lightweight wrapper around RLDS TFDS Pipeline for use with PyTorch/OpenVLA Data Loaders."""
         self.data_root_dir, self.data_mix, self.batch_transform = data_root_dir, data_mix, batch_transform
@@ -182,7 +203,7 @@ class RLDSDataset(IterableDataset):
         )
         rlds_config = dict(
             traj_transform_kwargs=dict(
-                window_size=1,                                      # If we wanted to feed / predict more than one step
+                window_size=temporal_window_size if use_temporal_slots else 1,
                 future_action_window_size=NUM_ACTIONS_CHUNK-1,      # For action chunking
                 skip_unlabeled=True,                                # Skip trajectories without language labels
                 goal_relabeling_strategy="uniform",                 # Goals are currently unused

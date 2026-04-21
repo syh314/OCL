@@ -36,11 +36,11 @@ def verify_openvla() -> None:
     print("[*] Instantiating Processor and Pretrained OpenVLA")
     processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
 
-    # === BFLOAT16 + FLASH-ATTN MODE ===
-    print("[*] Loading in BF16 with Flash-Attention Enabled")
+    # === BFLOAT16 + SDPA MODE ===
+    print("[*] Loading in BF16 with SDPA attention")
     vla = AutoModelForVision2Seq.from_pretrained(
         MODEL_PATH,
-        attn_implementation="flash_attention_2",
+        attn_implementation="sdpa",
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         trust_remote_code=True,
@@ -50,7 +50,7 @@ def verify_openvla() -> None:
     # print("[*] Loading in 8-Bit Quantization Mode")
     # vla = AutoModelForVision2Seq.from_pretrained(
     #     MODEL_PATH,
-    #     attn_implementation="flash_attention_2",
+    #     attn_implementation="sdpa",
     #     torch_dtype=torch.float16,
     #     quantization_config=BitsAndBytesConfig(load_in_8bit=True),
     #     low_cpu_mem_usage=True,
@@ -61,7 +61,7 @@ def verify_openvla() -> None:
     # print("[*] Loading in 4-Bit Quantization Mode")
     # vla = AutoModelForVision2Seq.from_pretrained(
     #     MODEL_PATH,
-    #     attn_implementation="flash_attention_2",
+    #     attn_implementation="sdpa",
     #     torch_dtype=torch.float16,
     #     quantization_config=BitsAndBytesConfig(load_in_4bit=True),
     #     low_cpu_mem_usage=True,

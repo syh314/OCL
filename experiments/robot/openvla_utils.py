@@ -305,7 +305,7 @@ def get_vla(cfg: Any) -> torch.nn.Module:
     # Load the model
     vla = AutoModelForVision2Seq.from_pretrained(
         cfg.pretrained_checkpoint,
-        # attn_implementation="flash_attention_2",
+        # attn_implementation="sdpa",
         torch_dtype=torch.bfloat16,
         load_in_8bit=cfg.load_in_8bit,
         load_in_4bit=cfg.load_in_4bit,

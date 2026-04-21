@@ -139,6 +139,11 @@ class FinetuneConfig:
     # 重建损失 α：total_loss = action_loss + α * slot_recon_loss
     # 经验：先用 0.1，根据训练初期两个 loss 的比例调到 recon 项 ≈ 0.1~0.5×action_loss
     slot_recon_loss_weight: float = 0.1
+    use_temporal_slots: bool = False
+    temporal_window_size: int = 1
+    slot_carryover_detach_prev: bool = True
+    slot_temporal_loss_weight: float = 0.05
+    slot_temporal_tau: float = 0.1
     # fmt: on
 
 
@@ -210,6 +215,11 @@ def apply_runtime_slot_overrides(model_config, cfg: FinetuneConfig) -> None:
     """Apply experiment-time slot toggles to the HF config before model instantiation."""
     model_config.use_slot_bottleneck = cfg.use_slot_bottleneck
     model_config.slot_recon_loss_weight = cfg.slot_recon_loss_weight
+    model_config.use_temporal_slots = cfg.use_temporal_slots
+    model_config.temporal_window_size = cfg.temporal_window_size
+    model_config.slot_carryover_detach_prev = cfg.slot_carryover_detach_prev
+    model_config.slot_temporal_loss_weight = cfg.slot_temporal_loss_weight
+    model_config.slot_temporal_tau = cfg.slot_temporal_tau
 
 
 def append_metrics_record(metrics_path: Path, split: str, step: int, metrics: Dict[str, float]) -> None:
@@ -451,6 +461,10 @@ def run_forward_pass(
             slot_recon_weight = cfg.slot_recon_loss_weight if cfg is not None else 1.0
             metrics["slot_recon_loss"] = output.slot_recon_loss.item()
             metrics["slot_recon_loss_weighted"] = (slot_recon_weight * output.slot_recon_loss).item()
+        if getattr(output, "slot_temporal_loss", None) is not None:
+            slot_temporal_weight = cfg.slot_temporal_loss_weight if cfg is not None else 1.0
+            metrics["slot_temporal_loss"] = output.slot_temporal_loss.item()
+            metrics["slot_temporal_loss_weighted"] = (slot_temporal_weight * output.slot_temporal_loss).item()
         
     #——————————————————————————————————————————————————————————————————————————————————
     # Compute metrics for continuous action representations (L1 regression)
@@ -491,6 +505,9 @@ def run_forward_pass(
         if getattr(output, "slot_recon_loss", None) is not None:
             # total_loss = action_loss + α * slot_recon_loss
             loss = loss + slot_recon_weight * output.slot_recon_loss
+        slot_temporal_weight = cfg.slot_temporal_loss_weight if cfg is not None else 1.0
+        if getattr(output, "slot_temporal_loss", None) is not None:
+            loss = loss + slot_temporal_weight * output.slot_temporal_loss
 
         metrics.update(
             {
@@ -502,6 +519,11 @@ def run_forward_pass(
             metrics["slot_recon_loss"] = output.slot_recon_loss.item()  # 原始（未加权）
             metrics["slot_recon_loss_weighted"] = (
                 slot_recon_weight * output.slot_recon_loss
+            ).item()
+        if getattr(output, "slot_temporal_loss", None) is not None:
+            metrics["slot_temporal_loss"] = output.slot_temporal_loss.item()
+            metrics["slot_temporal_loss_weighted"] = (
+                slot_temporal_weight * output.slot_temporal_loss
             ).item()
 
         # Get detailed L1 losses for logging
@@ -939,8 +961,12 @@ def finetune(cfg: FinetuneConfig) -> None:
             trust_remote_code=False,
             ).to(device_id)
 
-    # Set number of images in VLA input
-    vla.vision_backbone.set_num_images_in_input(cfg.num_images_in_input) # 一次输入几张图片
+    if cfg.temporal_window_size < 1:
+        raise ValueError(f"temporal_window_size must be >= 1, got {cfg.temporal_window_size}.")
+
+    # Set number of images in VLA input. In temporal mode this is camera_views * time.
+    effective_num_images_in_input = cfg.num_images_in_input * cfg.temporal_window_size if cfg.use_temporal_slots else cfg.num_images_in_input
+    vla.vision_backbone.set_num_images_in_input(effective_num_images_in_input) # 一次输入几张图片
 #——————————————————————————————————————————————————————————————————
     # vla.set_version(cfg.version)
 
@@ -1098,7 +1124,9 @@ def finetune(cfg: FinetuneConfig) -> None:
         prompt_builder_fn=PurePromptBuilder, # 指令模板
         use_wrist_image=use_wrist_image,
         use_proprio=cfg.use_proprio,
-        use_minivlm=cfg.use_minivlm
+        use_minivlm=cfg.use_minivlm,
+        use_temporal_slots=cfg.use_temporal_slots,
+        temporal_window_size=cfg.temporal_window_size,
         )
     train_dataset = RLDSDataset(
         cfg.data_root_dir,
@@ -1107,6 +1135,8 @@ def finetune(cfg: FinetuneConfig) -> None:
         resize_resolution=tuple(vla.module.config.image_sizes), # 图像大小
         shuffle_buffer_size=cfg.shuffle_buffer_size,
         image_aug=cfg.image_aug,
+        use_temporal_slots=cfg.use_temporal_slots,
+        temporal_window_size=cfg.temporal_window_size,
     )
     if cfg.use_val_set:
         val_dataset = RLDSDataset(
@@ -1116,6 +1146,8 @@ def finetune(cfg: FinetuneConfig) -> None:
             resize_resolution=tuple(vla.module.config.image_sizes),
             shuffle_buffer_size=cfg.shuffle_buffer_size // 10,
             image_aug=cfg.image_aug,
+            use_temporal_slots=cfg.use_temporal_slots,
+            temporal_window_size=cfg.temporal_window_size,
             train=False, # 验证集不需要 shuffle
         )
 

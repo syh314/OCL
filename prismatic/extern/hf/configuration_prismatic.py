@@ -97,6 +97,11 @@ class PrismaticConfig(PretrainedConfig):
         slot_num_heads: int = 4,
         slot_num_decode_layers: int = 4, # Slot 解码器层数
         slot_recon_loss_weight: float = 0.1,  # 重建损失在总损失中的权重 α
+        use_temporal_slots: bool = False,
+        temporal_window_size: int = 1,
+        slot_carryover_detach_prev: bool = True,
+        slot_temporal_loss_weight: float = 0.05,
+        slot_temporal_tau: float = 0.1,
         **kwargs: str,
     ) -> None:
         if vision_backbone_id not in VALID_VISION_BACKBONES:
@@ -118,6 +123,11 @@ class PrismaticConfig(PretrainedConfig):
         self.slot_num_heads = slot_num_heads
         self.slot_num_decode_layers = slot_num_decode_layers
         self.slot_recon_loss_weight = slot_recon_loss_weight
+        self.use_temporal_slots = use_temporal_slots
+        self.temporal_window_size = temporal_window_size
+        self.slot_carryover_detach_prev = slot_carryover_detach_prev
+        self.slot_temporal_loss_weight = slot_temporal_loss_weight
+        self.slot_temporal_tau = slot_temporal_tau
 
         # [Contract] All vision backbone parameters are lists =>> supports fused backbones with different preprocessing
         self.use_fused_vision_backbone = (
