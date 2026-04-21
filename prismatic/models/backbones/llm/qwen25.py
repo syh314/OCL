@@ -2,8 +2,18 @@
 qwen2_5.py
 
 Class definition for all LLMs derived from QwenForCausalLM.
+
+Local weights (avoid editing this file after every `git pull`):
+  - export PRISMATIC_LLM_LOCAL_PATH=/abs/path/to/Qwen2.5-0.5B   # dir must contain config.json (+ weights)
+  - or place an HF snapshot at ./pretrained_models/Qwen2.5-0.5B or <repo>/pretrained_models/Qwen2.5-0.5B
+  - AutoDL 常见数据盘: /root/autodl-tmp/OCL/pretrained_models/Qwen2.5-0.5B（会自动探测）
+  - or set hf_hub_path in QWEN25_MODELS to an absolute path (directory on disk)
 """
 
+from __future__ import annotations
+
+import os
+from pathlib import Path
 from typing import Optional, Sequence, Type
 
 import torch
@@ -13,6 +23,35 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from prismatic.models.backbones.llm.base_llm import HFCausalLLMBackbone
 from prismatic.models.backbones.llm.prompting.base_prompter import PromptBuilder
 from prismatic.models.backbones.llm.prompting.qwen_prompter import QwenPromptBuilder
+
+
+def _resolve_local_qwen_hf_path(hf_hub_path: str) -> str:
+    """Map Hub id (e.g. Qwen/Qwen2.5-0.5B) to a local directory when present; else return hf_hub_path unchanged."""
+    p = Path(hf_hub_path).expanduser()
+    if p.is_dir() and (p / "config.json").exists():
+        return str(p.resolve())
+
+    env = os.environ.get("PRISMATIC_LLM_LOCAL_PATH", "").strip()
+    if env:
+        ep = Path(env).expanduser()
+        if ep.is_dir() and (ep / "config.json").exists():
+            return str(ep.resolve())
+
+    hub_tail = hf_hub_path.rstrip("/").split("/")[-1]
+    repo_root = Path(__file__).resolve().parents[4]
+    for base in (Path.cwd() / "pretrained_models", repo_root / "pretrained_models"):
+        for name in (hub_tail, hf_hub_path.replace("/", "--")):
+            cand = base / name
+            if cand.is_dir() and (cand / "config.json").exists():
+                return str(cand.resolve())
+
+    # AutoDL: weights often live at /root/autodl-tmp/OCL/pretrained_models/<model> regardless of cwd
+    autodl_ocl = Path("/root/autodl-tmp/OCL/pretrained_models") / hub_tail
+    if autodl_ocl.is_dir() and (autodl_ocl / "config.json").exists():
+        return str(autodl_ocl.resolve())
+
+    return hf_hub_path
+
 
 # Registry =>> Support Qwen-2.5 Models (from HF Transformers)
 # fmt: off
@@ -48,13 +87,15 @@ class Qwen25LLMBackbone(HFCausalLLMBackbone):
         use_flash_attention_2: bool = True,
         num_extra_tokens: int = 0,
     ) -> None:
+        spec = dict(QWEN25_MODELS[llm_backbone_id])
+        spec["hf_hub_path"] = _resolve_local_qwen_hf_path(spec["hf_hub_path"])
         super().__init__(
             llm_backbone_id,
             llm_max_length=llm_max_length,
             hf_token=hf_token,
             inference_mode=inference_mode,
             use_flash_attention_2=use_flash_attention_2,
-            **QWEN25_MODELS[llm_backbone_id],
+            **spec,
         )
 
         # add some more special tokens
